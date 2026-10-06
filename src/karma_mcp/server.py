@@ -800,8 +800,23 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
                             )
                             not_fetched[name] = not_fetched.get(name, 0) + hidden
 
+                # Reported independently of the active list: held-back alerts may
+                # be in any state, including names with no active alert fetched
+                omitted_note = ""
+                if not_fetched:
+                    active_names = {alert["name"] for alert in active_alerts}
+                    omitted_note = (
+                        f"\n⚠️ {sum(not_fetched.values())} alerts (any state) were not "
+                        f"fetched because groups exceeded group_limit={group_limit}; "
+                        "raise group_limit to see them."
+                    )
+                    for name in sorted(set(not_fetched) - active_names):
+                        omitted_note += (
+                            f"\n   • {name}: {not_fetched[name]} not fetched"
+                        )
+
                 if not active_alerts:
-                    return "No active alerts found."
+                    return "No active alerts found." + omitted_note
 
                 # Format output
                 result = "Active Alerts (Non-Suppressed)\n"
@@ -828,13 +843,7 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
                     result += "\n"
 
-                result += f"Total Active Alerts: {len(active_alerts)}"
-                if not_fetched:
-                    result += (
-                        f"\n⚠️ {sum(not_fetched.values())} alerts (any state) were not "
-                        f"fetched because groups exceeded group_limit={group_limit}; "
-                        "raise group_limit to see them."
-                    )
+                result += f"Total Active Alerts: {len(active_alerts)}" + omitted_note
                 return result
             else:
                 return f"Error fetching alerts: code {response.status_code}"
