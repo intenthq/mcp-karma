@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.2](https://github.com/intenthq/mcp-karma/compare/v0.11.1...v0.11.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **deps:** migrate to mcp Python SDK v2 ([#39](https://github.com/intenthq/mcp-karma/issues/39)) ([7bed2a2](https://github.com/intenthq/mcp-karma/commit/7bed2a29892c1ed9655f9ed90d1fc51c92fca8d3))
+* serve MCP Streamable HTTP at /mcp, keep /mcp/sse as alias ([#37](https://github.com/intenthq/mcp-karma/issues/37)) ([68620c8](https://github.com/intenthq/mcp-karma/commit/68620c8d6111f63347ddf563b377e8543fe597e6))
+
 ## [0.11.1](https://github.com/intenthq/mcp-karma/compare/v0.11.0...v0.11.1) (2026-06-02)
 
 
