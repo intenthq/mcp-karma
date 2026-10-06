@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.3](https://github.com/intenthq/mcp-karma/compare/v0.11.2...v0.11.3) (2026-10-06)
+
+
+### Bug Fixes
+
+* show cluster and truncation in list_active_alerts ([#41](https://github.com/intenthq/mcp-karma/issues/41)) ([4a4258b](https://github.com/intenthq/mcp-karma/commit/4a4258bba4718f8c4a5671b75b245876c373567a))
+
 ## [0.11.2](https://github.com/intenthq/mcp-karma/compare/v0.11.1...v0.11.2) (2026-10-06)
 
 
