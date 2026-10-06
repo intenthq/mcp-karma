@@ -123,20 +123,21 @@ Add to your MCP client configuration:
 ```
 
 #### Remote HTTP Server (Alternative)
-If you have deployed the HTTP server version, use SSE transport:
+If you have deployed the HTTP server version, use Streamable HTTP transport:
 
 ```json
 {
   "mcpServers": {
     "karma": {
-      "transport": {
-        "type": "sse",
-        "url": "https://your-karma-mcp-server.com/mcp/sse"
-      }
+      "type": "http",
+      "url": "https://your-karma-mcp-server.com/mcp"
     }
   }
 }
 ```
+
+`/mcp/sse` still accepts POST as a deprecated alias for `/mcp`. The server has
+no SSE transport — `"type": "sse"` will not connect.
 
 3. **Connect to your Karma instance**
 ```bash

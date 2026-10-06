@@ -5,7 +5,6 @@ Exposes MCP tools as REST endpoints and SSE for ingress access
 """
 
 import asyncio
-import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -15,7 +14,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 # Import MCP tools
@@ -141,6 +140,7 @@ async def root():
         "service": "Karma MCP HTTP Server",
         "version": "0.1.0",
         "endpoints": [
+            "POST /mcp - MCP Streamable HTTP endpoint (JSON-RPC)",
             "GET /health - Check Karma connectivity",
             "GET /alerts - List all alerts",
             "GET /alerts/summary - Get alerts summary",
@@ -364,10 +364,12 @@ async def mcp_tool_endpoint(tool_name: str, params: dict[str, Any] = None):
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-# MCP protocol endpoint for proper JSON-RPC communication
+# MCP Streamable HTTP endpoint (JSON-RPC over POST).
+# /mcp/sse is a deprecated alias kept for clients configured before /mcp existed.
+@app.post("/mcp")
 @app.post("/mcp/sse")
 async def mcp_jsonrpc_endpoint(request: Request):
-    """MCP JSON-RPC endpoint for Claude Code integration"""
+    """MCP JSON-RPC endpoint (Streamable HTTP transport)"""
     try:
         data = await request.json()
 
@@ -641,10 +643,9 @@ async def mcp_jsonrpc_endpoint(request: Request):
                 }
                 return response
 
-        # Handle notifications/initialized (Claude Code bug workaround)
+        # Notifications get 202 Accepted with no body, per the Streamable HTTP spec
         elif data.get("method") == "notifications/initialized":
-            # Just acknowledge, no response needed for notifications
-            return None
+            return Response(status_code=202)
 
         # Unknown method
         else:
@@ -668,65 +669,12 @@ async def mcp_jsonrpc_endpoint(request: Request):
         return response
 
 
-# Keep SSE endpoint for testing
+# No server-initiated stream: Streamable HTTP servers answer GET with 405 so
+# clients fall back to POST instead of waiting on an SSE handshake.
+@app.get("/mcp")
 @app.get("/mcp/sse")
-async def mcp_sse_stream(request: Request):
-    """Server-Sent Events endpoint for testing"""
-
-    async def event_stream():
-        try:
-            # Send initial connection event
-            yield f"data: {json.dumps({'type': 'connection', 'status': 'connected', 'server': 'karma-mcp', 'version': '0.3.2'})}\n\n"
-
-            # Send available tools list
-            tools = [
-                {
-                    "name": "check_karma",
-                    "description": "Check connection to Karma server",
-                },
-                {"name": "list_alerts", "description": "List all active alerts"},
-                {"name": "get_alerts_summary", "description": "Get alert statistics"},
-                {
-                    "name": "get_alert_details",
-                    "description": "Get specific alert details",
-                },
-                {"name": "list_clusters", "description": "List all clusters"},
-                {
-                    "name": "list_alerts_by_cluster",
-                    "description": "Filter alerts by cluster",
-                },
-                {
-                    "name": "list_alerts_by_label",
-                    "description": "Filter alerts by an arbitrary label key/value",
-                },
-            ]
-            yield f"data: {json.dumps({'type': 'tools', 'tools': tools})}\n\n"
-
-            # Keep connection alive and listen for client disconnect
-            while True:
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    break
-
-                # Send periodic heartbeat
-                yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': asyncio.get_event_loop().time()})}\n\n"
-                await asyncio.sleep(30)
-
-        except asyncio.CancelledError:
-            logger.info("SSE connection cancelled")
-        except Exception as e:
-            logger.error(f"SSE stream error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-        },
-    )
+async def mcp_get_not_allowed():
+    return Response(status_code=405, headers={"Allow": "POST"})
 
 
 # WebSocket-like endpoint for tool execution via SSE
@@ -838,7 +786,7 @@ def run_server():
 
     logger.info(f"Starting Karma MCP HTTP server on {host}:{port}")
     logger.info(f"Karma URL: {os.getenv('KARMA_URL', 'http://localhost:8080')}")
-    logger.info("SSE endpoint available at /mcp/sse")
+    logger.info("MCP endpoint available at /mcp (/mcp/sse is a deprecated alias)")
     logger.info("Tool execution endpoint at /mcp/execute")
 
     uvicorn.run(app, host=host, port=port, log_level="info")
