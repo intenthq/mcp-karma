@@ -351,7 +351,6 @@ class TestServerConfiguration:
             ("/alerts/by-cluster", "POST"),
             ("/alerts/details", "POST"),
             ("/mcp", "POST"),
-            ("/mcp/sse", "POST"),
             ("/mcp/execute", "POST"),
         ]
 
