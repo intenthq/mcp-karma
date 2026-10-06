@@ -758,46 +758,47 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
                 data = response.json()
 
                 active_alerts = []
+                # Alerts Karma held back per alertname because of group_limit
+                not_fetched: dict[str, int] = {}
                 grids = data.get("grids", [])
 
                 for grid in grids:
                     for group in grid.get("alertGroups", []):
-                        # Get group labels (contains alertname)
-                        group_labels_dict = labels_list_to_dict(group.get("labels", []))
-                        shared_labels_dict = labels_list_to_dict(
-                            group.get("shared", {}).get("labels", [])
+                        group_alerts = group.get("alerts", [])
+                        hidden = group.get("totalAlerts", len(group_alerts)) - len(
+                            group_alerts
                         )
 
-                        alertname = group_labels_dict.get("alertname", "unknown")
-
-                        for alert in group.get("alerts", []):
-                            alert_state = alert.get("state", "unknown")
-
+                        for alert in group_alerts:
                             # Only include active alerts (not suppressed)
-                            if alert_state.lower() == "active":
-                                # Convert alert labels to dict
-                                alert_labels_dict = labels_list_to_dict(
-                                    alert.get("labels", [])
-                                )
+                            if alert.get("state", "unknown").lower() != "active":
+                                continue
 
-                                active_alerts.append(
-                                    {
-                                        "name": alertname,
-                                        "state": alert_state,
-                                        "severity": resolve_severity(
-                                            group_labels_dict,
-                                            alert_labels_dict,
-                                            shared_labels_dict,
-                                        ),
-                                        "namespace": alert_labels_dict.get(
-                                            "namespace", "N/A"
-                                        ),
-                                        "instance": alert_labels_dict.get(
-                                            "instance", "N/A"
-                                        ),
-                                        "starts_at": alert.get("startsAt", "N/A"),
-                                    }
-                                )
+                            # Karma moves labels common to a whole group onto the
+                            # group, so read namespace/instance from all three levels
+                            metadata = extract_alert_metadata(group, alert)
+                            labels = {
+                                **labels_list_to_dict(group.get("labels", [])),
+                                **labels_list_to_dict(
+                                    group.get("shared", {}).get("labels", [])
+                                ),
+                                **labels_list_to_dict(alert.get("labels", [])),
+                            }
+                            active_alerts.append(
+                                {
+                                    "name": metadata["alertname"],
+                                    "severity": metadata["severity"],
+                                    "cluster": metadata["cluster"],
+                                    "namespace": metadata["namespace"],
+                                    "instance": labels.get("instance", "N/A"),
+                                }
+                            )
+
+                        if hidden > 0:
+                            name = labels_list_to_dict(group.get("labels", [])).get(
+                                "alertname", "unknown"
+                            )
+                            not_fetched[name] = not_fetched.get(name, 0) + hidden
 
                 if not active_alerts:
                     return "No active alerts found."
@@ -807,12 +808,9 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
                 result += "=" * 50 + "\n\n"
 
                 # Group by alert name
-                alert_groups = {}
+                alert_groups: dict[str, list] = {}
                 for alert in active_alerts:
-                    name = alert["name"]
-                    if name not in alert_groups:
-                        alert_groups[name] = []
-                    alert_groups[name].append(alert)
+                    alert_groups.setdefault(alert["name"], []).append(alert)
 
                 for alertname, alerts in sorted(alert_groups.items()):
                     result += f"🔥 {alertname} ({len(alerts)} instance{'s' if len(alerts) > 1 else ''})\n"
@@ -820,14 +818,23 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
                     # Show details for each instance
                     for alert in alerts[:5]:  # Limit to 5 instances to avoid clutter
-                        result += f"   • {alert['instance']} ({alert['namespace']})\n"
+                        result += f"   • {alert['cluster']} / {alert['namespace']}: {alert['instance']}\n"
 
                     if len(alerts) > 5:
                         result += f"   • ... and {len(alerts) - 5} more\n"
 
+                    if not_fetched.get(alertname):
+                        result += f"   ⚠️ {not_fetched[alertname]} more not fetched (group_limit={group_limit})\n"
+
                     result += "\n"
 
                 result += f"Total Active Alerts: {len(active_alerts)}"
+                if not_fetched:
+                    result += (
+                        f"\n⚠️ {sum(not_fetched.values())} alerts (any state) were not "
+                        f"fetched because groups exceeded group_limit={group_limit}; "
+                        "raise group_limit to see them."
+                    )
                 return result
             else:
                 return f"Error fetching alerts: code {response.status_code}"
