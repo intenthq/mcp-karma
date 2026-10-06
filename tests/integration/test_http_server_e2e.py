@@ -52,7 +52,7 @@ class TestHTTPServerE2E:
             },
         }
 
-        response = client.post("/mcp/sse", json=init_payload)
+        response = client.post("/mcp", json=init_payload)
         assert response.status_code == 200
 
         init_result = response.json()
@@ -63,13 +63,13 @@ class TestHTTPServerE2E:
         # Step 2: Send initialized notification
         notif_payload = {"jsonrpc": "2.0", "method": "notifications/initialized"}
 
-        response = client.post("/mcp/sse", json=notif_payload)
-        assert response.status_code == 200
+        response = client.post("/mcp", json=notif_payload)
+        assert response.status_code == 202
 
         # Step 3: List available tools
         tools_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
 
-        response = client.post("/mcp/sse", json=tools_payload)
+        response = client.post("/mcp", json=tools_payload)
         assert response.status_code == 200
 
         tools_result = response.json()
@@ -112,7 +112,7 @@ class TestHTTPServerE2E:
             "params": {"name": "check_karma", "arguments": {}},
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         result = response.json()
@@ -135,7 +135,7 @@ class TestHTTPServerE2E:
             "params": {"name": "list_active_alerts", "arguments": {}},
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         result = response.json()
@@ -146,7 +146,7 @@ class TestHTTPServerE2E:
         payload["id"] = 5
         payload["params"]["name"] = "list_suppressed_alerts"
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         # Test get_alerts_by_state with parameter
@@ -154,7 +154,7 @@ class TestHTTPServerE2E:
         payload["params"]["name"] = "get_alerts_by_state"
         payload["params"]["arguments"] = {"state": "active"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
     def test_error_handling_in_mcp_protocol(self):
@@ -164,7 +164,7 @@ class TestHTTPServerE2E:
         # Test unknown method
         payload = {"jsonrpc": "2.0", "id": 7, "method": "unknown/method"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         result = response.json()
@@ -179,7 +179,7 @@ class TestHTTPServerE2E:
             "params": {"name": "unknown_tool", "arguments": {}},
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         result = response.json()
@@ -197,7 +197,7 @@ class TestHTTPServerE2E:
             },
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         result = response.json()
@@ -350,7 +350,7 @@ class TestServerConfiguration:
             ("/clusters", "GET"),
             ("/alerts/by-cluster", "POST"),
             ("/alerts/details", "POST"),
-            ("/mcp/sse", "GET"),
+            ("/mcp", "POST"),
             ("/mcp/sse", "POST"),
             ("/mcp/execute", "POST"),
         ]

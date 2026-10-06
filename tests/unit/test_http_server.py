@@ -4,6 +4,7 @@ Unit tests for HTTP server functionality
 
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from karma_mcp.http_server import app
@@ -205,8 +206,9 @@ class TestRESTEndpoints:
 class TestMCPProtocolEndpoint:
     """Test suite for MCP JSON-RPC protocol endpoint"""
 
-    def test_mcp_initialize_request(self):
-        """Test MCP initialize handshake"""
+    @pytest.mark.parametrize("path", ["/mcp", "/mcp/sse"])
+    def test_mcp_initialize_request(self, path):
+        """Test MCP initialize handshake on /mcp and the deprecated /mcp/sse alias"""
         client = TestClient(app)
 
         payload = {
@@ -220,7 +222,7 @@ class TestMCPProtocolEndpoint:
             },
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post(path, json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -236,7 +238,7 @@ class TestMCPProtocolEndpoint:
 
         payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -268,7 +270,7 @@ class TestMCPProtocolEndpoint:
                 "params": {"name": "check_karma", "arguments": {}},
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -291,7 +293,7 @@ class TestMCPProtocolEndpoint:
                 "params": {"name": "list_active_alerts", "arguments": {}},
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -314,7 +316,7 @@ class TestMCPProtocolEndpoint:
                 },
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -343,7 +345,7 @@ class TestMCPProtocolEndpoint:
                 },
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -377,7 +379,7 @@ class TestMCPProtocolEndpoint:
                 },
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -401,7 +403,7 @@ class TestMCPProtocolEndpoint:
             },
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -421,7 +423,7 @@ class TestMCPProtocolEndpoint:
             "params": {"name": "unknown_tool", "arguments": {}},
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -434,7 +436,7 @@ class TestMCPProtocolEndpoint:
 
         payload = {"jsonrpc": "2.0", "id": 8, "method": "unknown/method"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -447,10 +449,21 @@ class TestMCPProtocolEndpoint:
 
         payload = {"jsonrpc": "2.0", "method": "notifications/initialized"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
-        # Should return 200 with no content for notifications
-        assert response.status_code == 200
+        # Notifications get 202 Accepted with no body
+        assert response.status_code == 202
+        assert response.content == b""
+
+    @pytest.mark.parametrize("path", ["/mcp", "/mcp/sse"])
+    def test_mcp_get_not_allowed(self, path):
+        """GET returns 405 so clients don't wait on an SSE stream we don't offer"""
+        client = TestClient(app)
+
+        response = client.get(path)
+
+        assert response.status_code == 405
+        assert response.headers["allow"] == "POST"
 
 
 class TestExecuteEndpoint:
@@ -567,7 +580,7 @@ class TestErrorHandling:
                 "params": {"name": "check_karma", "arguments": {}},
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -579,7 +592,7 @@ class TestErrorHandling:
         client = TestClient(app)
 
         response = client.post(
-            "/mcp/sse",
+            "/mcp",
             data="invalid json",
             headers={"Content-Type": "application/json"},
         )
