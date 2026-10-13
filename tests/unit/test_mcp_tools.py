@@ -332,6 +332,98 @@ class TestStateFiltering:
             assert "Total Active Alerts: 2" in result
             # Should contain KubePodCrashLooping active instance and HighMemoryUsage
             assert "🔥" in result  # Fire emoji for active alerts
+            assert "teddy-prod / production: 10.1.1.1:8080" in result
+            assert "not fetched" not in result
+
+    @pytest.mark.asyncio
+    async def test_list_active_alerts_cluster_shared_labels_and_truncation(
+        self, env_setup
+    ):
+        """Shows cluster, reads namespace from shared labels, flags truncated groups"""
+        data = {
+            "grids": [
+                {
+                    "alertGroups": [
+                        {
+                            "labels": [
+                                {"name": "alertname", "value": "KubeJobFailed"},
+                                {"name": "severity", "value": "warning"},
+                            ],
+                            "shared": {
+                                "labels": [
+                                    {"name": "namespace", "value": "crossplane-system"}
+                                ]
+                            },
+                            "alerts": [
+                                {
+                                    "labels": [
+                                        {"name": "instance", "value": "10.0.0.1:8080"}
+                                    ],
+                                    "state": "active",
+                                    "alertmanager": [{"cluster": "internal-sta"}],
+                                }
+                            ],
+                            "totalAlerts": 4,
+                        }
+                    ]
+                }
+            ]
+        }
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = data
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await list_active_alerts(group_limit=1)
+
+            assert "internal-sta / crossplane-system: 10.0.0.1:8080" in result
+            assert "3 more not fetched (group_limit=1)" in result
+            assert "3 alerts (any state) were not fetched" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_active_group", [False, True])
+    async def test_list_active_alerts_reports_omitted_without_active_instance(
+        self, env_setup, with_active_group
+    ):
+        """Omitted alerts are reported even when their group returned only suppressed"""
+        suppressed_group = {
+            "labels": [{"name": "alertname", "value": "TargetDown"}],
+            "alerts": [
+                {"state": "suppressed", "alertmanager": [{"cluster": "mtn-prod"}]}
+            ],
+            "totalAlerts": 5,
+        }
+        active_group = {
+            "labels": [{"name": "alertname", "value": "KubePodNotReady"}],
+            "alerts": [
+                {
+                    "labels": [{"name": "namespace", "value": "default"}],
+                    "state": "active",
+                    "alertmanager": [{"cluster": "teddy-prod"}],
+                }
+            ],
+            "totalAlerts": 1,
+        }
+        groups = [suppressed_group] + ([active_group] if with_active_group else [])
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"grids": [{"alertGroups": groups}]}
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await list_active_alerts(group_limit=1)
+
+            assert "4 alerts (any state) were not fetched" in result
+            assert "TargetDown: 4 not fetched" in result
+            if with_active_group:
+                assert "teddy-prod / default" in result
+            else:
+                assert result.startswith("No active alerts found.")
 
     @pytest.mark.asyncio
     async def test_list_suppressed_alerts(self, env_setup, sample_karma_data):
