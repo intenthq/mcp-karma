@@ -365,9 +365,7 @@ async def mcp_tool_endpoint(tool_name: str, params: dict[str, Any] = None):
 
 
 # MCP Streamable HTTP endpoint (JSON-RPC over POST).
-# /mcp/sse is a deprecated alias kept for clients configured before /mcp existed.
 @app.post("/mcp")
-@app.post("/mcp/sse")
 async def mcp_jsonrpc_endpoint(request: Request):
     """MCP JSON-RPC endpoint (Streamable HTTP transport)"""
     try:
@@ -672,7 +670,6 @@ async def mcp_jsonrpc_endpoint(request: Request):
 # No server-initiated stream: Streamable HTTP servers answer GET with 405 so
 # clients fall back to POST instead of waiting on an SSE handshake.
 @app.get("/mcp")
-@app.get("/mcp/sse")
 async def mcp_get_not_allowed():
     return Response(status_code=405, headers={"Allow": "POST"})
 
@@ -786,7 +783,7 @@ def run_server():
 
     logger.info(f"Starting Karma MCP HTTP server on {host}:{port}")
     logger.info(f"Karma URL: {os.getenv('KARMA_URL', 'http://localhost:8080')}")
-    logger.info("MCP endpoint available at /mcp (/mcp/sse is a deprecated alias)")
+    logger.info("MCP endpoint available at /mcp")
     logger.info("Tool execution endpoint at /mcp/execute")
 
     uvicorn.run(app, host=host, port=port, log_level="info")
