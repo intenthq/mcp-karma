@@ -136,8 +136,8 @@ If you have deployed the HTTP server version, use Streamable HTTP transport:
 }
 ```
 
-`/mcp/sse` still accepts POST as a deprecated alias for `/mcp`. The server has
-no SSE transport — `"type": "sse"` will not connect.
+The server has no SSE transport — `"type": "sse"` will not connect. The old
+`/mcp/sse` path was removed; use `/mcp`.
 
 3. **Connect to your Karma instance**
 ```bash

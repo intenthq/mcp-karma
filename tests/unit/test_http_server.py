@@ -206,9 +206,8 @@ class TestRESTEndpoints:
 class TestMCPProtocolEndpoint:
     """Test suite for MCP JSON-RPC protocol endpoint"""
 
-    @pytest.mark.parametrize("path", ["/mcp", "/mcp/sse"])
-    def test_mcp_initialize_request(self, path):
-        """Test MCP initialize handshake on /mcp and the deprecated /mcp/sse alias"""
+    def test_mcp_initialize_request(self):
+        """Test MCP initialize handshake"""
         client = TestClient(app)
 
         payload = {
@@ -222,7 +221,7 @@ class TestMCPProtocolEndpoint:
             },
         }
 
-        response = client.post(path, json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -455,15 +454,23 @@ class TestMCPProtocolEndpoint:
         assert response.status_code == 202
         assert response.content == b""
 
-    @pytest.mark.parametrize("path", ["/mcp", "/mcp/sse"])
-    def test_mcp_get_not_allowed(self, path):
+    def test_mcp_get_not_allowed(self):
         """GET returns 405 so clients don't wait on an SSE stream we don't offer"""
         client = TestClient(app)
 
-        response = client.get(path)
+        response = client.get("/mcp")
 
         assert response.status_code == 405
         assert response.headers["allow"] == "POST"
+
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_legacy_sse_path_removed(self, method):
+        """The deprecated /mcp/sse alias is gone"""
+        client = TestClient(app)
+
+        response = client.request(method, "/mcp/sse", json={})
+
+        assert response.status_code == 404
 
 
 class TestExecuteEndpoint:

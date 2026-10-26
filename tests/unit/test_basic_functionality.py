@@ -71,7 +71,7 @@ class TestMCPProtocolBasics:
             },
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -88,7 +88,7 @@ class TestMCPProtocolBasics:
 
         payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
 
         assert response.status_code == 200
         data = response.json()
@@ -130,7 +130,7 @@ class TestMCPProtocolBasics:
                 "params": {"name": "check_karma", "arguments": {}},
             }
 
-            response = client.post("/mcp/sse", json=payload)
+            response = client.post("/mcp", json=payload)
 
             assert response.status_code == 200
             data = response.json()
@@ -147,7 +147,7 @@ class TestMCPProtocolBasics:
 
         payload = {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         data = response.json()
 
         tools = data["result"]["tools"]
@@ -176,7 +176,7 @@ class TestMCPProtocolBasics:
         # Test unknown method
         payload = {"jsonrpc": "2.0", "id": 5, "method": "unknown/method"}
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         data = response.json()
@@ -198,7 +198,7 @@ class TestMCPProtocolBasics:
             },
         }
 
-        response = client.post("/mcp/sse", json=payload)
+        response = client.post("/mcp", json=payload)
         assert response.status_code == 200
 
         data = response.json()
