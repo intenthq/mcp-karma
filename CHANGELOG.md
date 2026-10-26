@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/intenthq/mcp-karma/compare/v0.11.3...v1.0.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* clients configured with https://<host>/mcp/sse must switch to https://<host>/mcp.
+
+### Features
+
+* remove deprecated /mcp/sse endpoint ([#40](https://github.com/intenthq/mcp-karma/issues/40)) ([21dda0b](https://github.com/intenthq/mcp-karma/commit/21dda0b8061e6582db3d2273649d77d8f4ed88cf))
+
 ## [0.11.3](https://github.com/intenthq/mcp-karma/compare/v0.11.2...v0.11.3) (2026-10-06)
 
 
