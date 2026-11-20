@@ -390,16 +390,20 @@ def extract_cluster_info(alerts_data):
             "instance_name": instance.get("name", "N/A"),
         }
 
-    # Count alerts per cluster
+    # Count alerts per cluster. An alert is listed once per Alertmanager member
+    # that reports it, so a multi-member (HA) cluster must count it only once.
     grids = alerts_data.get("grids", [])
     for grid in grids:
         for group in grid.get("alertGroups", []):
             for alert in group.get("alerts", []):
+                seen_clusters: set[str] = set()
                 for am in alert.get("alertmanager", []):
                     cluster = am.get("cluster", "unknown")
-                    cluster_alert_counts[cluster] = (
-                        cluster_alert_counts.get(cluster, 0) + 1
-                    )
+                    if cluster not in seen_clusters:
+                        seen_clusters.add(cluster)
+                        cluster_alert_counts[cluster] = (
+                            cluster_alert_counts.get(cluster, 0) + 1
+                        )
 
     return clusters, cluster_alert_counts
 
