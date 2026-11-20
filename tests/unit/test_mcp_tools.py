@@ -1442,8 +1442,8 @@ def two_team_data():
                 "labelValue": "",
                 "alertGroups": [
                     _group(
-                        "SudoDiskFull",
-                        "sudo",
+                        "PlatformDiskFull",
+                        "platform",
                         [_alert("10.0.0.1"), _alert("10.0.0.2", "suppressed")],
                     ),
                     _group("OtherQueueLag", "other", [_alert("10.0.0.9")]),
@@ -1469,9 +1469,9 @@ class TestLabelFilterOnAlertTools:
     @pytest.mark.parametrize(
         ("tool", "expected", "absent"),
         [
-            (list_alerts, "SudoDiskFull", "OtherQueueLag"),
-            (list_active_alerts, "SudoDiskFull", "OtherQueueLag"),
-            (list_suppressed_alerts, "SudoDiskFull", "OtherQueueLag"),
+            (list_alerts, "PlatformDiskFull", "OtherQueueLag"),
+            (list_active_alerts, "PlatformDiskFull", "OtherQueueLag"),
+            (list_suppressed_alerts, "PlatformDiskFull", "OtherQueueLag"),
         ],
     )
     @pytest.mark.asyncio
@@ -1481,7 +1481,7 @@ class TestLabelFilterOnAlertTools:
         patcher, mock_client = _mock_karma(two_team_data)
         with patcher as mock_client_class:
             mock_client_class.return_value.__aenter__.return_value = mock_client
-            result = await tool(label_name="team", label_value="sudo")
+            result = await tool(label_name="team", label_value="platform")
 
         assert expected in result
         assert absent not in result
@@ -1493,7 +1493,7 @@ class TestLabelFilterOnAlertTools:
             mock_client_class.return_value.__aenter__.return_value = mock_client
             result = await list_active_alerts()
 
-        assert "SudoDiskFull" in result
+        assert "PlatformDiskFull" in result
         assert "OtherQueueLag" in result
 
     @pytest.mark.asyncio
@@ -1504,10 +1504,10 @@ class TestLabelFilterOnAlertTools:
         with patcher as mock_client_class:
             mock_client_class.return_value.__aenter__.return_value = mock_client
             active = await get_alerts_by_state(
-                "active", label_name="team", label_value="sudo"
+                "active", label_name="team", label_value="platform"
             )
             suppressed = await get_alerts_by_state(
-                "suppressed", label_name="team", label_value="sudo"
+                "suppressed", label_name="team", label_value="platform"
             )
 
         assert "10.0.0.1" in active
@@ -1525,14 +1525,14 @@ class TestLabelFilterOnAlertTools:
             )
 
         assert "OtherQueueLag" in result
-        assert "SudoDiskFull" not in result
+        assert "PlatformDiskFull" not in result
 
     @pytest.mark.asyncio
     async def test_summary_counts_only_the_team(self, env_setup, two_team_data):
         patcher, mock_client = _mock_karma(two_team_data)
         with patcher as mock_client_class:
             mock_client_class.return_value.__aenter__.return_value = mock_client
-            result = await get_alerts_summary(label_name="team", label_value="sudo")
+            result = await get_alerts_summary(label_name="team", label_value="platform")
 
         assert "Total Alerts: 2" in result
         assert "OtherQueueLag" not in result
@@ -1544,16 +1544,16 @@ class TestLabelFilterOnAlertTools:
         # The same alertname owned by two teams: only the requested team's
         # instances come back.
         two_team_data["grids"][0]["alertGroups"].append(
-            _group("SudoDiskFull", "other", [_alert("10.9.9.9")])
+            _group("PlatformDiskFull", "other", [_alert("10.9.9.9")])
         )
         patcher, mock_client = _mock_karma(two_team_data)
         with patcher as mock_client_class:
             mock_client_class.return_value.__aenter__.return_value = mock_client
             details = await get_alert_details(
-                "SudoDiskFull", label_name="team", label_value="sudo"
+                "PlatformDiskFull", label_name="team", label_value="platform"
             )
             multi = await get_alert_details_multi_cluster(
-                "SudoDiskFull", label_name="team", label_value="sudo"
+                "PlatformDiskFull", label_name="team", label_value="platform"
             )
 
         for result in (details, multi):
@@ -1572,7 +1572,7 @@ class TestLabelFilterOnAlertTools:
     )
     @pytest.mark.parametrize(
         "kwargs",
-        [{"label_name": "team"}, {"label_value": "sudo"}],
+        [{"label_name": "team"}, {"label_value": "platform"}],
     )
     @pytest.mark.asyncio
     async def test_half_a_label_filter_is_rejected(
@@ -1610,15 +1610,16 @@ class TestListSilencesLabelFilter:
         return {
             "silences": {
                 "c1": {
-                    "s-sudo": _silence(
-                        [_m("alertname", "A"), _m("team", "sudo")], "sudo silence"
+                    "s-platform": _silence(
+                        [_m("alertname", "A"), _m("team", "platform")],
+                        "platform silence",
                     ),
                     "s-other": _silence([_m("team", "other")], "other silence"),
                     "s-regex": _silence(
-                        [_m("team", "su.*", is_regex=True)], "regex silence"
+                        [_m("team", "pla.*", is_regex=True)], "regex silence"
                     ),
                     "s-negated": _silence(
-                        [_m("team", "sudo", is_equal=False)], "negated silence"
+                        [_m("team", "platform", is_equal=False)], "negated silence"
                     ),
                     "s-noteam": _silence([_m("alertname", "B")], "no team silence"),
                 },
@@ -1631,10 +1632,10 @@ class TestListSilencesLabelFilter:
         patcher, mock_client = _mock_karma(silence_data)
         with patcher as mock_client_class:
             mock_client_class.return_value.__aenter__.return_value = mock_client
-            result = await list_silences(label_name="team", label_value="sudo")
+            result = await list_silences(label_name="team", label_value="platform")
 
-        assert "sudo silence" in result
-        assert "regex silence" in result  # anchored regex su.* matches 'sudo'
+        assert "platform silence" in result
+        assert "regex silence" in result  # anchored regex pla.* matches 'platform'
         assert "other silence" not in result
         assert "c2 silence" not in result
         # a negative matcher excludes the team, it does not select it
@@ -1649,9 +1650,9 @@ class TestListSilencesLabelFilter:
         patcher, mock_client = _mock_karma(silence_data)
         with patcher as mock_client_class:
             mock_client_class.return_value.__aenter__.return_value = mock_client
-            result = await list_silences(label_name="TEAM", label_value="SUDO")
+            result = await list_silences(label_name="TEAM", label_value="PLATFORM")
 
-        assert "sudo silence" in result
+        assert "platform silence" in result
 
     @pytest.mark.asyncio
     async def test_label_filter_combines_with_cluster(self, env_setup, silence_data):
@@ -1676,7 +1677,7 @@ class TestListSilencesLabelFilter:
 
     @pytest.mark.asyncio
     async def test_long_matcher_lists_are_flagged_as_truncated(self, env_setup):
-        matchers = [_m(f"label{i}", "x") for i in range(5)] + [_m("team", "sudo")]
+        matchers = [_m(f"label{i}", "x") for i in range(5)] + [_m("team", "platform")]
         patcher, mock_client = _mock_karma(
             {"silences": {"c1": {"s1": _silence(matchers, "many matchers")}}}
         )

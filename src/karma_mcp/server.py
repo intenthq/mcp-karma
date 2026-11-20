@@ -478,7 +478,7 @@ async def list_alerts(
     Args:
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             this when a group has more than 50 alerts and the listing
             is being truncated.
@@ -525,7 +525,7 @@ async def get_alerts_summary(
     Args:
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group when
             fetching from Karma. Affects the counts in the summary.
     """
@@ -744,7 +744,7 @@ async def get_alert_details(
         alert_name: Name of the alert to get details for
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when the alert has more than 50 instances and the
             listing is being truncated.
@@ -817,7 +817,7 @@ async def list_active_alerts(
     Args:
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when a group has more than 50 active alerts and the
             listing is being truncated.
@@ -941,7 +941,7 @@ async def list_suppressed_alerts(
     Args:
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when a group has more than 50 suppressed alerts and the
             listing is being truncated.
@@ -1053,7 +1053,7 @@ async def get_alerts_by_state(
         state: One of "active", "suppressed", or "all".
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when a group has more than 50 alerts and the listing is
             being truncated.
@@ -1098,7 +1098,7 @@ async def get_alert_details_multi_cluster(
         cluster_filter: Optional cluster name filter. If empty, searches all clusters.
         label_name: Optional label to filter by (e.g. 'team'). Use together
             with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when the alert has more than 50 instances per cluster
             and the listing is being truncated.
@@ -1524,9 +1524,9 @@ async def list_silences(
     Args:
         cluster: Optional cluster name to filter silences (e.g., 'teddy-prod')
         label_name: Optional label; only silences whose matchers select
-            label_name=label_value are listed (e.g. 'team' and 'sudo').
+            label_name=label_value are listed (e.g. 'team' and 'platform').
             Use together with label_value.
-        label_value: Value the label must have (e.g. 'sudo').
+        label_value: Value the label must have (e.g. 'platform').
 
     Returns:
         Formatted list of active silences with details
