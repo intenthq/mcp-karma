@@ -289,6 +289,46 @@ class TestListAlerts:
 
             assert "Error fetching alerts: code 500" in result
 
+    @pytest.mark.asyncio
+    async def test_list_alerts_flags_truncated_groups(self, env_setup):
+        """A group with more than 10 alerts says how many were left out"""
+        alerts = [
+            {
+                "state": "active",
+                "labels": [{"name": "instance", "value": f"node-{i}"}],
+                "alertmanager": [{"name": "am", "cluster": "c"}],
+            }
+            for i in range(13)
+        ]
+        data = {
+            "grids": [
+                {
+                    "alertGroups": [
+                        {
+                            "labels": [
+                                {"name": "alertname", "value": "DiskFull"},
+                                {"name": "severity", "value": "warning"},
+                            ],
+                            "alerts": alerts,
+                        }
+                    ]
+                }
+            ]
+        }
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = data
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await list_alerts()
+
+            assert "Found 13 alerts" in result
+            assert result.count("• DiskFull") == 10
+            assert "... and 3 more DiskFull alerts" in result
+
 
 class TestGetAlertsSummary:
     """Test suite for get_alerts_summary function"""
