@@ -194,6 +194,8 @@ The following tools are available for Claude to use:
 | `search_alerts` | Search alerts by name pattern | "Find all OOM alerts" |
 | `silence_alert` | Create alert silence | "Silence KubePodCrashLooping for 2h" |
 
+`list_alerts`, `get_alerts_summary`, `get_alert_details`, `get_alert_details_multi_cluster`, `list_active_alerts`, `list_suppressed_alerts`, `get_alerts_by_state` and `list_silences` accept an optional `label_name` and `label_value` (for example `team` and `platform`) to limit the result to one label. `list_silences` keeps the silences whose matchers select that label, including regex matchers.
+
 ## 🧠 AI-Enhanced Analysis
 
 The Karma MCP Server includes specialized prompts that help Claude provide more valuable alert analysis:

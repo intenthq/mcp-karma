@@ -20,6 +20,7 @@ from karma_mcp.server import (
     list_alerts,
     list_alerts_by_cluster,
     list_clusters,
+    list_silences,
     list_suppressed_alerts,
     resolve_severity,
     search_alerts_by_container,
@@ -1397,3 +1398,291 @@ class TestGetAlertDetailsMultiCluster:
             assert "..." in result  # Description should be truncated
             assert "service=api-service" in result
             assert "deployment=api-deployment" in result
+
+
+def _alert(instance: str, state: str = "active", cluster: str = "c1") -> dict:
+    return {
+        "annotations": [],
+        "labels": [{"name": "instance", "value": instance}],
+        "startsAt": "2025-09-04T09:30:00Z",
+        "state": state,
+        "alertmanager": [{"cluster": cluster, "name": "am", "state": state}],
+        "receiver": "web.hook",
+        "id": f"id-{instance}",
+    }
+
+
+def _group(alertname: str, team: str, alerts: list) -> dict:
+    return {
+        "receiver": "web.hook",
+        "labels": [
+            {"name": "alertname", "value": alertname},
+            {"name": "severity", "value": "warning"},
+            {"name": "team", "value": team},
+        ],
+        "alerts": alerts,
+        "id": f"group-{alertname}",
+        "totalAlerts": len(alerts),
+    }
+
+
+@pytest.fixture
+def two_team_data():
+    """Alerts owned by two teams, one of them suppressed."""
+    return {
+        "status": "success",
+        "upstreams": {
+            "instances": [
+                {"name": "am", "cluster": "c1", "version": "0.27.0", "error": ""}
+            ]
+        },
+        "grids": [
+            {
+                "labelName": "",
+                "labelValue": "",
+                "alertGroups": [
+                    _group(
+                        "PlatformDiskFull",
+                        "platform",
+                        [_alert("10.0.0.1"), _alert("10.0.0.2", "suppressed")],
+                    ),
+                    _group("OtherQueueLag", "other", [_alert("10.0.0.9")]),
+                ],
+            }
+        ],
+    }
+
+
+def _mock_karma(data):
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = data
+    mock_client.post.return_value = mock_response
+    mock_client_class = patch("karma_mcp.server.karma_client")
+    return mock_client_class, mock_client
+
+
+class TestLabelFilterOnAlertTools:
+    """label_name/label_value narrows the state, summary and detail tools."""
+
+    @pytest.mark.parametrize(
+        ("tool", "expected", "absent"),
+        [
+            (list_alerts, "PlatformDiskFull", "OtherQueueLag"),
+            (list_active_alerts, "PlatformDiskFull", "OtherQueueLag"),
+            (list_suppressed_alerts, "PlatformDiskFull", "OtherQueueLag"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_listing_tools_filter_by_team(
+        self, env_setup, two_team_data, tool, expected, absent
+    ):
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await tool(label_name="team", label_value="platform")
+
+        assert expected in result
+        assert absent not in result
+
+    @pytest.mark.asyncio
+    async def test_without_label_nothing_is_filtered(self, env_setup, two_team_data):
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_active_alerts()
+
+        assert "PlatformDiskFull" in result
+        assert "OtherQueueLag" in result
+
+    @pytest.mark.asyncio
+    async def test_active_and_suppressed_stay_separate_within_a_team(
+        self, env_setup, two_team_data
+    ):
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            active = await get_alerts_by_state(
+                "active", label_name="team", label_value="platform"
+            )
+            suppressed = await get_alerts_by_state(
+                "suppressed", label_name="team", label_value="platform"
+            )
+
+        assert "10.0.0.1" in active
+        assert "10.0.0.2" not in active
+        assert "10.0.0.2" in suppressed
+        assert "10.0.0.1" not in suppressed
+
+    @pytest.mark.asyncio
+    async def test_state_all_passes_the_label_through(self, env_setup, two_team_data):
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await get_alerts_by_state(
+                "all", label_name="team", label_value="other"
+            )
+
+        assert "OtherQueueLag" in result
+        assert "PlatformDiskFull" not in result
+
+    @pytest.mark.asyncio
+    async def test_summary_counts_only_the_team(self, env_setup, two_team_data):
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await get_alerts_summary(label_name="team", label_value="platform")
+
+        assert "Total Alerts: 2" in result
+        assert "OtherQueueLag" not in result
+
+    @pytest.mark.asyncio
+    async def test_alert_details_only_returns_the_team_instances(
+        self, env_setup, two_team_data
+    ):
+        # The same alertname owned by two teams: only the requested team's
+        # instances come back.
+        two_team_data["grids"][0]["alertGroups"].append(
+            _group("PlatformDiskFull", "other", [_alert("10.9.9.9")])
+        )
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            details = await get_alert_details(
+                "PlatformDiskFull", label_name="team", label_value="platform"
+            )
+            multi = await get_alert_details_multi_cluster(
+                "PlatformDiskFull", label_name="team", label_value="platform"
+            )
+
+        for result in (details, multi):
+            assert "10.0.0.1" in result
+            assert "10.9.9.9" not in result
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            list_alerts,
+            get_alerts_summary,
+            list_active_alerts,
+            list_suppressed_alerts,
+            list_silences,
+        ],
+    )
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"label_name": "team"}, {"label_value": "platform"}],
+    )
+    @pytest.mark.asyncio
+    async def test_half_a_label_filter_is_rejected(
+        self, env_setup, two_team_data, tool, kwargs
+    ):
+        # Must not silently ignore the filter and return every team's data.
+        patcher, mock_client = _mock_karma(two_team_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await tool(**kwargs)
+
+        assert "label_name and label_value must be given together" in result
+        mock_client.post.assert_not_called()
+
+
+def _silence(matchers: list[dict], comment: str = "c") -> dict:
+    return {
+        "matchers": matchers,
+        "startsAt": "2026-01-01T00:00:00Z",
+        "endsAt": "2026-12-31T00:00:00Z",
+        "createdBy": "tester",
+        "comment": comment,
+    }
+
+
+def _m(name, value, is_regex=False, is_equal=True) -> dict:
+    return {"name": name, "value": value, "isRegex": is_regex, "isEqual": is_equal}
+
+
+class TestListSilencesLabelFilter:
+    """list_silences can be limited to silences that select a label."""
+
+    @pytest.fixture
+    def silence_data(self):
+        return {
+            "silences": {
+                "c1": {
+                    "s-platform": _silence(
+                        [_m("alertname", "A"), _m("team", "platform")],
+                        "platform silence",
+                    ),
+                    "s-other": _silence([_m("team", "other")], "other silence"),
+                    "s-regex": _silence(
+                        [_m("team", "pla.*", is_regex=True)], "regex silence"
+                    ),
+                    "s-negated": _silence(
+                        [_m("team", "platform", is_equal=False)], "negated silence"
+                    ),
+                    "s-noteam": _silence([_m("alertname", "B")], "no team silence"),
+                },
+                "c2": {"s-c2": _silence([_m("team", "other")], "c2 silence")},
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_filters_by_team_matcher(self, env_setup, silence_data):
+        patcher, mock_client = _mock_karma(silence_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_silences(label_name="team", label_value="platform")
+
+        assert "platform silence" in result
+        assert "regex silence" in result  # anchored regex pla.* matches 'platform'
+        assert "other silence" not in result
+        assert "c2 silence" not in result
+        # a negative matcher excludes the team, it does not select it
+        assert "negated silence" not in result
+        assert "no team silence" not in result
+        assert "Total: 2 active silences" in result
+
+    @pytest.mark.asyncio
+    async def test_label_filter_is_case_insensitive_on_plain_values(
+        self, env_setup, silence_data
+    ):
+        patcher, mock_client = _mock_karma(silence_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_silences(label_name="TEAM", label_value="PLATFORM")
+
+        assert "platform silence" in result
+
+    @pytest.mark.asyncio
+    async def test_label_filter_combines_with_cluster(self, env_setup, silence_data):
+        patcher, mock_client = _mock_karma(silence_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_silences(
+                cluster="c2", label_name="team", label_value="other"
+            )
+
+        assert "c2 silence" in result
+        assert "other silence" not in result
+
+    @pytest.mark.asyncio
+    async def test_no_matching_silence(self, env_setup, silence_data):
+        patcher, mock_client = _mock_karma(silence_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_silences(label_name="team", label_value="ghost")
+
+        assert "No active silences found for team=ghost" in result
+
+    @pytest.mark.asyncio
+    async def test_long_matcher_lists_are_flagged_as_truncated(self, env_setup):
+        matchers = [_m(f"label{i}", "x") for i in range(5)] + [_m("team", "platform")]
+        patcher, mock_client = _mock_karma(
+            {"silences": {"c1": {"s1": _silence(matchers, "many matchers")}}}
+        )
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_silences()
+
+        assert "... and 3 more matchers" in result
