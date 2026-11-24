@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/intenthq/mcp-karma/compare/v1.0.0...v1.0.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* count each alert once per Alertmanager cluster in list_clusters ([#44](https://github.com/intenthq/mcp-karma/issues/44)) ([444cd2c](https://github.com/intenthq/mcp-karma/commit/444cd2cdf9b1652b0c1aa9d5501f4596bba6c34e))
+* show when list_alerts truncates a group at 10 alerts ([#45](https://github.com/intenthq/mcp-karma/issues/45)) ([d353501](https://github.com/intenthq/mcp-karma/commit/d3535011c96889a13571434bfe855cb9700712d2))
+
 ## [1.0.0](https://github.com/intenthq/mcp-karma/compare/v0.11.3...v1.0.0) (2026-10-26)
 
 
