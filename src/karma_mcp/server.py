@@ -453,13 +453,20 @@ async def list_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
             alerts = group.get("alerts", [])
             total_alerts += len(alerts)
 
-            for alert in alerts[:10]:  # Show max 10 alerts per group
+            display_limit = 10  # Show max 10 alerts per group
+            for alert in alerts[:display_limit]:
                 metadata = extract_alert_metadata(group, alert)
 
                 alert_text += f"• {metadata['alertname']}\n"
                 alert_text += f"  Severity: {metadata['severity']}\n"
                 alert_text += f"  State: {metadata['state']}\n"
                 alert_text += f"  Namespace: {metadata['namespace']}\n\n"
+
+            if len(alerts) > display_limit:
+                name = extract_alert_metadata(group, alerts[0])["alertname"]
+                alert_text += (
+                    f"  ... and {len(alerts) - display_limit} more {name} alerts\n\n"
+                )
 
     if total_alerts == 0:
         return "No active alerts"
