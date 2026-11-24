@@ -648,6 +648,52 @@ class TestListClusters:
             assert "teddy-prod" in result
             assert "Total Clusters:" in result
 
+    @pytest.mark.asyncio
+    async def test_list_clusters_counts_alert_once_per_ha_cluster(self, env_setup):
+        """An alert reported by every member of an HA cluster counts once"""
+        members = [{"name": f"am-{i}", "cluster": "ha"} for i in range(3)]
+        data = {
+            "upstreams": {
+                "instances": [
+                    {"name": "am-0", "cluster": "ha", "version": "0.27.0"},
+                    {"name": "solo", "cluster": "single", "version": "0.27.0"},
+                ]
+            },
+            "grids": [
+                {
+                    "alertGroups": [
+                        {
+                            "labels": {"alertname": "HighLatency"},
+                            "alerts": [
+                                # reported by all three HA members
+                                {"alertmanager": members},
+                                # reported by a single-member cluster
+                                {
+                                    "alertmanager": [
+                                        {"name": "solo", "cluster": "single"}
+                                    ]
+                                },
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = data
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await list_clusters()
+
+            ha_section = result.split("ha\n")[1].split("\n\n")[0]
+            assert "Active Alerts: 1" in ha_section
+            assert "Active Alerts: 3" not in result
+            assert "Total Alert Instances: 2" in result
+
 
 class TestListAlertsByCluster:
     """Test suite for list_alerts_by_cluster function"""
