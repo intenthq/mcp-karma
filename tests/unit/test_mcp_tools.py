@@ -290,6 +290,46 @@ class TestListAlerts:
 
             assert "Error fetching alerts: code 500" in result
 
+    @pytest.mark.asyncio
+    async def test_list_alerts_flags_truncated_groups(self, env_setup):
+        """A group with more than 10 alerts says how many were left out"""
+        alerts = [
+            {
+                "state": "active",
+                "labels": [{"name": "instance", "value": f"node-{i}"}],
+                "alertmanager": [{"name": "am", "cluster": "c"}],
+            }
+            for i in range(13)
+        ]
+        data = {
+            "grids": [
+                {
+                    "alertGroups": [
+                        {
+                            "labels": [
+                                {"name": "alertname", "value": "DiskFull"},
+                                {"name": "severity", "value": "warning"},
+                            ],
+                            "alerts": alerts,
+                        }
+                    ]
+                }
+            ]
+        }
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = data
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await list_alerts()
+
+            assert "Found 13 alerts" in result
+            assert result.count("• DiskFull") == 10
+            assert "... and 3 more DiskFull alerts" in result
+
 
 class TestGetAlertsSummary:
     """Test suite for get_alerts_summary function"""
@@ -608,6 +648,52 @@ class TestListClusters:
             assert "Available Kubernetes Clusters" in result
             assert "teddy-prod" in result
             assert "Total Clusters:" in result
+
+    @pytest.mark.asyncio
+    async def test_list_clusters_counts_alert_once_per_ha_cluster(self, env_setup):
+        """An alert reported by every member of an HA cluster counts once"""
+        members = [{"name": f"am-{i}", "cluster": "ha"} for i in range(3)]
+        data = {
+            "upstreams": {
+                "instances": [
+                    {"name": "am-0", "cluster": "ha", "version": "0.27.0"},
+                    {"name": "solo", "cluster": "single", "version": "0.27.0"},
+                ]
+            },
+            "grids": [
+                {
+                    "alertGroups": [
+                        {
+                            "labels": {"alertname": "HighLatency"},
+                            "alerts": [
+                                # reported by all three HA members
+                                {"alertmanager": members},
+                                # reported by a single-member cluster
+                                {
+                                    "alertmanager": [
+                                        {"name": "solo", "cluster": "single"}
+                                    ]
+                                },
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = data
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await list_clusters()
+
+            ha_section = result.split("ha\n")[1].split("\n\n")[0]
+            assert "Active Alerts: 1" in ha_section
+            assert "Active Alerts: 3" not in result
+            assert "Total Alert Instances: 2" in result
 
 
 class TestListAlertsByCluster:
