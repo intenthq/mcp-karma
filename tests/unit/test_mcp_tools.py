@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from karma_mcp.server import (
+    apply_label_filter,
     check_karma,
     extract_alert_metadata,
     filter_alerts_by_label,
@@ -1772,3 +1773,186 @@ class TestListSilencesLabelFilter:
             result = await list_silences()
 
         assert "... and 3 more matchers" in result
+
+
+def _held_back_alert(instance: str, team: str | None = None) -> dict:
+    labels = [{"name": "instance", "value": instance}]
+    if team:
+        labels.append({"name": "team", "value": team})
+    return {
+        "annotations": [],
+        "labels": labels,
+        "startsAt": "2025-09-04T09:30:00Z",
+        "state": "active",
+        "alertmanager": [{"cluster": "c1", "name": "am", "state": "active"}],
+        "receiver": "web.hook",
+        "id": f"id-{instance}",
+    }
+
+
+def _truncated_group(alertname, team, total, alerts) -> dict:
+    labels = [{"name": "alertname", "value": alertname}]
+    if team:
+        labels.append({"name": "team", "value": team})
+    return {
+        "receiver": "web.hook",
+        "labels": labels,
+        "alerts": alerts,
+        "id": f"group-{alertname}",
+        "totalAlerts": total,
+    }
+
+
+@pytest.fixture
+def truncated_data():
+    """Karma cut every group to a few alerts (totalAlerts > alerts fetched)."""
+    return {
+        "status": "success",
+        "upstreams": {"instances": []},
+        "grids": [
+            {
+                "labelName": "",
+                "labelValue": "",
+                "alertGroups": [
+                    # team is a group label and matches: held-back alerts match too
+                    _truncated_group(
+                        "DiskFull", "platform", 4, [_held_back_alert("10.0.0.1")]
+                    ),
+                    # team is a group label with another value: held-back cannot match
+                    _truncated_group(
+                        "QueueLag", "other", 3, [_held_back_alert("10.0.0.2")]
+                    ),
+                    # no team on the group: the match is per alert, held-back unknown
+                    _truncated_group(
+                        "Mixed",
+                        None,
+                        5,
+                        [
+                            _held_back_alert("10.0.0.3", "platform"),
+                            _held_back_alert("10.0.0.4", "other"),
+                        ],
+                    ),
+                    # no team on the group and nothing fetched matches
+                    _truncated_group(
+                        "Hidden", None, 3, [_held_back_alert("10.0.0.5", "other")]
+                    ),
+                ],
+            }
+        ],
+    }
+
+
+class TestLabelFilterWithTruncation:
+    """A label filter must not hide that Karma held alerts back (group_limit)."""
+
+    def test_group_label_match_keeps_total_alerts(self, truncated_data):
+        result = apply_label_filter(truncated_data, "team", "platform")
+
+        groups = {g["id"]: g for grid in result["grids"] for g in grid["alertGroups"]}
+        assert groups["group-DiskFull"]["totalAlerts"] == 4
+        # per-alert match: held-back alerts cannot be checked, so none are claimed
+        assert groups["group-Mixed"]["totalAlerts"] == 1
+        assert "group-QueueLag" not in groups
+        assert "group-Hidden" not in groups
+
+    def test_unmatched_held_back_alerts_are_reported_unchecked(self, truncated_data):
+        result = apply_label_filter(truncated_data, "team", "platform")
+
+        # DiskFull matches on the group label (exact), QueueLag cannot match
+        assert result["labelFilterUnchecked"] == {"Mixed": 3, "Hidden": 2}
+
+    def test_no_filter_adds_nothing(self, truncated_data):
+        assert apply_label_filter(truncated_data, "", "") is truncated_data
+        assert "labelFilterUnchecked" not in truncated_data
+
+    @pytest.mark.asyncio
+    async def test_list_active_alerts_keeps_the_group_truncation_warning(
+        self, env_setup, truncated_data
+    ):
+        patcher, mock_client = _mock_karma(truncated_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_active_alerts(label_name="team", label_value="platform")
+
+        assert "DiskFull (1 instance)" in result
+        assert "3 more not fetched (group_limit=" in result
+        assert "QueueLag" not in result
+
+    @pytest.mark.asyncio
+    async def test_list_active_alerts_warns_about_unchecked_alerts(
+        self, env_setup, truncated_data
+    ):
+        patcher, mock_client = _mock_karma(truncated_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_active_alerts(label_name="team", label_value="platform")
+
+        assert "5 alerts (any state) were not fetched" in result
+        assert "could not be checked against team=platform" in result
+        assert "Mixed: 3 not fetched" in result
+        assert "Hidden: 2 not fetched" in result
+        # held-back alerts of the other team's group are not reported
+        assert "QueueLag: " not in result
+
+    @pytest.mark.asyncio
+    async def test_unfiltered_output_has_no_unchecked_note(
+        self, env_setup, truncated_data
+    ):
+        patcher, mock_client = _mock_karma(truncated_data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_active_alerts()
+
+        assert "could not be checked" not in result
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_marks_the_display_limit_for_a_filtered_group(
+        self, env_setup
+    ):
+        alerts = [_held_back_alert(f"10.0.1.{i}") for i in range(12)]
+        data = {
+            "grids": [
+                {"alertGroups": [_truncated_group("DiskFull", "platform", 12, alerts)]}
+            ]
+        }
+        patcher, mock_client = _mock_karma(data)
+        with patcher as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            result = await list_alerts(label_name="team", label_value="platform")
+
+        assert "Found 12 alerts" in result
+        assert "... and 2 more DiskFull alerts" in result
+
+    def test_shared_label_match_resets_total_and_counts_unchecked(self):
+        """Shared labels are computed over the returned alerts only, so a shared
+        match cannot vouch for the alerts Karma held back."""
+        group = _truncated_group("Shared", None, 6, [_held_back_alert("10.0.2.1")])
+        group["shared"] = {"labels": [{"name": "team", "value": "platform"}]}
+        data = {"grids": [{"alertGroups": [group]}]}
+
+        result = apply_label_filter(data, "team", "platform")
+
+        kept = result["grids"][0]["alertGroups"][0]
+        assert len(kept["alerts"]) == 1
+        assert kept["totalAlerts"] == 1
+        assert result["labelFilterUnchecked"] == {"Shared": 5}
+
+    def test_group_label_key_is_matched_case_insensitively(self):
+        group = _truncated_group("Cased", None, 4, [_held_back_alert("10.0.2.2")])
+        group["labels"].append({"name": "Team", "value": "Platform"})
+        data = {"grids": [{"alertGroups": [group]}]}
+
+        result = apply_label_filter(data, "team", "platform")
+
+        assert result["grids"][0]["alertGroups"][0]["totalAlerts"] == 4
+        assert "labelFilterUnchecked" not in result
+
+    def test_matching_group_without_fetched_alerts_keeps_its_warning(self):
+        group = _truncated_group("Empty", "platform", 5, [])
+        data = {"grids": [{"alertGroups": [group]}]}
+
+        result = apply_label_filter(data, "team", "platform")
+
+        kept = result["grids"][0]["alertGroups"][0]
+        assert kept["alerts"] == []
+        assert kept["totalAlerts"] == 5

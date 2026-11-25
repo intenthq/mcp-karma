@@ -55,6 +55,37 @@ def _group_limit_kwargs(params: dict) -> dict:
     return {"group_limit": int(raw)}
 
 
+def _label_filter_kwargs(params: dict) -> dict:
+    """Forward an optional ``label_name``/``label_value`` pair from a tool call.
+
+    Returns ``{}`` when neither is set, so the tool falls back to its own
+    default, and both values when both are set. Giving only one is an error:
+    ignoring it would silently return every team's data.
+    """
+    name = params.get("label_name") or ""
+    value = params.get("label_value") or ""
+    if bool(name) != bool(value):
+        raise ValueError("label_name and label_value must be given together")
+    if not name:
+        return {}
+    return {"label_name": str(name), "label_value": str(value)}
+
+
+_LABEL_FILTER_PROPERTIES = {
+    "label_name": {
+        "type": "string",
+        "description": (
+            "Optional label to filter by (for example 'team'). Use together "
+            "with label_value."
+        ),
+    },
+    "label_value": {
+        "type": "string",
+        "description": "Value the label must have (for example 'platform').",
+    },
+}
+
+
 _GROUP_LIMIT_SCHEMA = {
     "type": "integer",
     "description": (
@@ -254,10 +285,15 @@ async def search_alert_by_name(request: AlertSearchRequest):
 
 
 @app.get("/silences", response_model=MCPResponse)
-async def get_silences(cluster: str = ""):
-    """List all active silences, optionally filtered by cluster"""
+async def get_silences(cluster: str = "", label_name: str = "", label_value: str = ""):
+    """List active silences, optionally filtered by cluster and label"""
     try:
-        result = await list_silences(cluster)
+        result = await list_silences(
+            cluster,
+            **_label_filter_kwargs(
+                {"label_name": label_name, "label_value": label_value}
+            ),
+        )
         return MCPResponse(success=True, data=result)
     except Exception as e:
         logger.error(f"Error listing silences: {e}")
@@ -306,9 +342,9 @@ async def mcp_tool_endpoint(tool_name: str, params: dict[str, Any] = None):
         if tool_name == "check_karma":
             result = await check_karma()
         elif tool_name == "list_alerts":
-            result = await list_alerts(**gl)
+            result = await list_alerts(**gl, **_label_filter_kwargs(params))
         elif tool_name == "get_alerts_summary":
-            result = await get_alerts_summary(**gl)
+            result = await get_alerts_summary(**gl, **_label_filter_kwargs(params))
         elif tool_name == "list_clusters":
             result = await list_clusters(**gl)
         elif tool_name == "list_alerts_by_cluster":
@@ -329,16 +365,20 @@ async def mcp_tool_endpoint(tool_name: str, params: dict[str, Any] = None):
             alert_name = params.get("alert_name")
             if not alert_name:
                 raise ValueError("alert_name parameter required")
-            result = await get_alert_details(alert_name, **gl)
+            result = await get_alert_details(
+                alert_name, **gl, **_label_filter_kwargs(params)
+            )
         elif tool_name == "list_active_alerts":
-            result = await list_active_alerts(**gl)
+            result = await list_active_alerts(**gl, **_label_filter_kwargs(params))
         elif tool_name == "list_suppressed_alerts":
-            result = await list_suppressed_alerts(**gl)
+            result = await list_suppressed_alerts(**gl, **_label_filter_kwargs(params))
         elif tool_name == "get_alerts_by_state":
             state = params.get("state")
             if not state:
                 raise ValueError("state parameter required")
-            result = await get_alerts_by_state(state, **gl)
+            result = await get_alerts_by_state(
+                state, **gl, **_label_filter_kwargs(params)
+            )
         elif tool_name == "search_alerts_by_container":
             container_name = params.get("container_name")
             if not container_name:
@@ -353,7 +393,11 @@ async def mcp_tool_endpoint(tool_name: str, params: dict[str, Any] = None):
                 raise ValueError("alert_name parameter required")
             cluster_filter = params.get("cluster_filter", "")
             result = await get_alert_details_multi_cluster(
-                alert_name, cluster_filter, **gl
+                alert_name, cluster_filter, **gl, **_label_filter_kwargs(params)
+            )
+        elif tool_name == "list_silences":
+            result = await list_silences(
+                params.get("cluster", ""), **_label_filter_kwargs(params)
             )
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
@@ -397,7 +441,10 @@ async def mcp_jsonrpc_endpoint(request: Request):
                     "description": "List all active alerts",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {"group_limit": _GROUP_LIMIT_SCHEMA},
+                        "properties": {
+                            "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
+                        },
                         "required": [],
                     },
                 },
@@ -406,7 +453,10 @@ async def mcp_jsonrpc_endpoint(request: Request):
                     "description": "Get alert statistics",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {"group_limit": _GROUP_LIMIT_SCHEMA},
+                        "properties": {
+                            "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
+                        },
                         "required": [],
                     },
                 },
@@ -475,6 +525,7 @@ async def mcp_jsonrpc_endpoint(request: Request):
                                 "description": "Name of the alert to get details for",
                             },
                             "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
                         },
                         "required": ["alert_name"],
                     },
@@ -484,7 +535,10 @@ async def mcp_jsonrpc_endpoint(request: Request):
                     "description": "List only active (non-suppressed) alerts",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {"group_limit": _GROUP_LIMIT_SCHEMA},
+                        "properties": {
+                            "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
+                        },
                         "required": [],
                     },
                 },
@@ -493,7 +547,10 @@ async def mcp_jsonrpc_endpoint(request: Request):
                     "description": "List only suppressed alerts",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {"group_limit": _GROUP_LIMIT_SCHEMA},
+                        "properties": {
+                            "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
+                        },
                         "required": [],
                     },
                 },
@@ -509,8 +566,28 @@ async def mcp_jsonrpc_endpoint(request: Request):
                                 "enum": ["active", "suppressed", "all"],
                             },
                             "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
                         },
                         "required": ["state"],
+                    },
+                },
+                {
+                    "name": "list_silences",
+                    "description": (
+                        "List active silences, optionally limited to a cluster and "
+                        "to silences whose matchers select a label (for example "
+                        "team=platform)"
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "cluster": {
+                                "type": "string",
+                                "description": "Optional cluster name filter",
+                            },
+                            **_LABEL_FILTER_PROPERTIES,
+                        },
+                        "required": [],
                     },
                 },
                 {
@@ -549,6 +626,7 @@ async def mcp_jsonrpc_endpoint(request: Request):
                                 "default": "",
                             },
                             "group_limit": _GROUP_LIMIT_SCHEMA,
+                            **_LABEL_FILTER_PROPERTIES,
                         },
                         "required": ["alert_name"],
                     },
@@ -572,9 +650,11 @@ async def mcp_jsonrpc_endpoint(request: Request):
                 if tool_name == "check_karma":
                     result = await check_karma()
                 elif tool_name == "list_alerts":
-                    result = await list_alerts(**gl)
+                    result = await list_alerts(**gl, **_label_filter_kwargs(arguments))
                 elif tool_name == "get_alerts_summary":
-                    result = await get_alerts_summary(**gl)
+                    result = await get_alerts_summary(
+                        **gl, **_label_filter_kwargs(arguments)
+                    )
                 elif tool_name == "list_clusters":
                     result = await list_clusters(**gl)
                 elif tool_name == "list_alerts_by_cluster":
@@ -597,16 +677,24 @@ async def mcp_jsonrpc_endpoint(request: Request):
                     alert_name = arguments.get("alert_name")
                     if not alert_name:
                         raise ValueError("alert_name parameter required")
-                    result = await get_alert_details(alert_name, **gl)
+                    result = await get_alert_details(
+                        alert_name, **gl, **_label_filter_kwargs(arguments)
+                    )
                 elif tool_name == "list_active_alerts":
-                    result = await list_active_alerts(**gl)
+                    result = await list_active_alerts(
+                        **gl, **_label_filter_kwargs(arguments)
+                    )
                 elif tool_name == "list_suppressed_alerts":
-                    result = await list_suppressed_alerts(**gl)
+                    result = await list_suppressed_alerts(
+                        **gl, **_label_filter_kwargs(arguments)
+                    )
                 elif tool_name == "get_alerts_by_state":
                     state = arguments.get("state")
                     if not state:
                         raise ValueError("state parameter required")
-                    result = await get_alerts_by_state(state, **gl)
+                    result = await get_alerts_by_state(
+                        state, **gl, **_label_filter_kwargs(arguments)
+                    )
                 elif tool_name == "search_alerts_by_container":
                     container_name = arguments.get("container_name")
                     if not container_name:
@@ -621,7 +709,14 @@ async def mcp_jsonrpc_endpoint(request: Request):
                         raise ValueError("alert_name parameter required")
                     cluster_filter = arguments.get("cluster_filter", "")
                     result = await get_alert_details_multi_cluster(
-                        alert_name, cluster_filter, **gl
+                        alert_name,
+                        cluster_filter,
+                        **gl,
+                        **_label_filter_kwargs(arguments),
+                    )
+                elif tool_name == "list_silences":
+                    result = await list_silences(
+                        arguments.get("cluster", ""), **_label_filter_kwargs(arguments)
                     )
                 else:
                     raise ValueError(f"Unknown tool: {tool_name}")
@@ -691,9 +786,9 @@ async def execute_tool_sse(request: Request):
         if tool_name == "check_karma":
             result = await check_karma()
         elif tool_name == "list_alerts":
-            result = await list_alerts(**gl)
+            result = await list_alerts(**gl, **_label_filter_kwargs(params))
         elif tool_name == "get_alerts_summary":
-            result = await get_alerts_summary(**gl)
+            result = await get_alerts_summary(**gl, **_label_filter_kwargs(params))
         elif tool_name == "list_clusters":
             result = await list_clusters(**gl)
         elif tool_name == "list_alerts_by_cluster":
@@ -721,16 +816,20 @@ async def execute_tool_sse(request: Request):
                 raise HTTPException(
                     status_code=400, detail="alert_name parameter required"
                 )
-            result = await get_alert_details(alert_name, **gl)
+            result = await get_alert_details(
+                alert_name, **gl, **_label_filter_kwargs(params)
+            )
         elif tool_name == "list_active_alerts":
-            result = await list_active_alerts(**gl)
+            result = await list_active_alerts(**gl, **_label_filter_kwargs(params))
         elif tool_name == "list_suppressed_alerts":
-            result = await list_suppressed_alerts(**gl)
+            result = await list_suppressed_alerts(**gl, **_label_filter_kwargs(params))
         elif tool_name == "get_alerts_by_state":
             state = params.get("state")
             if not state:
                 raise HTTPException(status_code=400, detail="state parameter required")
-            result = await get_alerts_by_state(state, **gl)
+            result = await get_alerts_by_state(
+                state, **gl, **_label_filter_kwargs(params)
+            )
         elif tool_name == "search_alerts_by_container":
             container_name = params.get("container_name")
             if not container_name:
@@ -749,7 +848,11 @@ async def execute_tool_sse(request: Request):
                 )
             cluster_filter = params.get("cluster_filter", "")
             result = await get_alert_details_multi_cluster(
-                alert_name, cluster_filter, **gl
+                alert_name, cluster_filter, **gl, **_label_filter_kwargs(params)
+            )
+        elif tool_name == "list_silences":
+            result = await list_silences(
+                params.get("cluster", ""), **_label_filter_kwargs(params)
             )
         else:
             raise HTTPException(status_code=400, detail=f"Unknown tool: {tool_name}")

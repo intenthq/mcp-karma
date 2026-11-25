@@ -194,7 +194,11 @@ The following tools are available for Claude to use:
 | `search_alerts` | Search alerts by name pattern | "Find all OOM alerts" |
 | `silence_alert` | Create alert silence | "Silence KubePodCrashLooping for 2h" |
 
-`list_alerts`, `get_alerts_summary`, `get_alert_details`, `get_alert_details_multi_cluster`, `list_active_alerts`, `list_suppressed_alerts`, `get_alerts_by_state` and `list_silences` accept an optional `label_name` and `label_value` (for example `team` and `platform`) to limit the result to one label. `list_silences` keeps the silences whose matchers select that label, including regex matchers.
+`list_alerts`, `get_alerts_summary`, `get_alert_details`, `get_alert_details_multi_cluster`, `list_active_alerts`, `list_suppressed_alerts`, `get_alerts_by_state` and `list_silences` accept an optional `label_name` and `label_value` (for example `team` and `platform`) to limit the result to one label. `list_silences` keeps the silences whose matchers select that label, including regex matchers. The filter works over stdio and over the HTTP server (`tools/list`, `tools/call`, `/mcp/tools/{name}` and `/mcp/execute`), and `GET /silences` takes `label_name` and `label_value` as query parameters.
+
+Plain label values are compared case-insensitively, regex silence matchers as written and anchored, and negative silence matchers (`!=`, `!~`) never select a label.
+
+Karma cuts each alert group to `group_limit` alerts before the label filter runs. Only `list_active_alerts` reports alerts held back by that cut. With a label filter it reports them as before when the group's own labels carry the filtered label. Otherwise it adds a note with the number of held-back alerts that could not be checked against the label; raise `group_limit` to see whether they match.
 
 ## 🧠 AI-Enhanced Analysis
 

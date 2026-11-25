@@ -321,6 +321,16 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
     Karma deduplicates labels common to every alert in a group into
     ``group.shared.labels`` (severity is the canonical example), so a match
     there counts as a match for every alert in the group.
+
+    Karma cuts each group to ``group_limit`` alerts before this filter runs,
+    so alerts that were held back are never checked against the label. The
+    result keeps ``totalAlerts`` as Karma reported it when the group's own
+    labels match, because every held-back alert then matches too. A group
+    whose own labels carry the label with another value is skipped: its
+    held-back alerts cannot match. Otherwise the held-back alerts cannot be
+    checked (Karma computes shared labels over the returned alerts only), so
+    they are counted per alertname in ``labelFilterUnchecked``. A group with
+    no fetched match is dropped from the result but still counted there.
     """
     target_name = label_name.lower()
     target_value = label_value.lower()
@@ -332,6 +342,7 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
         return ""
 
     filtered_grids = []
+    unchecked: dict[str, int] = {}
 
     for grid in alerts_data.get("grids", []):
         filtered_groups = []
@@ -341,22 +352,34 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
             shared_labels_dict = labels_list_to_dict(
                 group.get("shared", {}).get("labels", [])
             )
+            group_defines_label = any(
+                k.lower() == target_name for k in group_labels_dict
+            )
+            group_label_match = _lookup(group_labels_dict) == target_value
             group_match = (
-                _lookup(group_labels_dict) == target_value
-                or _lookup(shared_labels_dict) == target_value
+                group_label_match or _lookup(shared_labels_dict) == target_value
             )
 
+            fetched = group.get("alerts", [])
             filtered_alerts = []
-            for alert in group.get("alerts", []):
+            for alert in fetched:
                 alert_labels_dict = labels_list_to_dict(alert.get("labels", []))
                 alert_match = _lookup(alert_labels_dict) == target_value
                 if group_match or alert_match:
                     filtered_alerts.append(alert)
 
-            if filtered_alerts:
+            held_back = max(group.get("totalAlerts", len(fetched)) - len(fetched), 0)
+            if held_back and not group_defines_label:
+                name = group_labels_dict.get("alertname", "unknown")
+                unchecked[name] = unchecked.get(name, 0) + held_back
+
+            # A group that matches on its own labels is kept even when Karma
+            # returned none of its alerts, so the held-back ones stay reported
+            if filtered_alerts or (group_label_match and held_back):
                 filtered_group = group.copy()
                 filtered_group["alerts"] = filtered_alerts
-                filtered_group["totalAlerts"] = len(filtered_alerts)
+                if not group_label_match:
+                    filtered_group["totalAlerts"] = len(filtered_alerts)
                 filtered_groups.append(filtered_group)
 
         if filtered_groups:
@@ -366,6 +389,8 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
 
     filtered_data = alerts_data.copy()
     filtered_data["grids"] = filtered_grids
+    if unchecked:
+        filtered_data["labelFilterUnchecked"] = unchecked
     return filtered_data
 
 
@@ -905,6 +930,20 @@ async def list_active_alerts(
                         omitted_note += (
                             f"\n   • {name}: {not_fetched[name]} not fetched"
                         )
+
+                # With a label filter, alerts held back inside groups that did not
+                # match on the group's own labels cannot be checked against it
+                unchecked = data.get("labelFilterUnchecked", {})
+                if unchecked:
+                    omitted_note += (
+                        f"\n⚠️ {sum(unchecked.values())} alerts (any state) were not fetched "
+                        f"because groups exceeded group_limit={group_limit}, and "
+                        f"their labels could not be checked against "
+                        f"{label_name}={label_value}; raise group_limit to see "
+                        "whether they match."
+                    )
+                    for name in sorted(unchecked):
+                        omitted_note += f"\n   • {name}: {unchecked[name]} not fetched"
 
                 if not active_alerts:
                     return "No active alerts found." + omitted_note
