@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/intenthq/mcp-karma/compare/v1.0.1...v1.1.0) (2026-11-27)
+
+
+### Features
+
+* add label filter to state, summary, detail and silence tools ([#46](https://github.com/intenthq/mcp-karma/issues/46)) ([51a737a](https://github.com/intenthq/mcp-karma/commit/51a737a7f7418baa6a0123b4ac268ee55514427f))
+
 ## [1.0.1](https://github.com/intenthq/mcp-karma/compare/v1.0.0...v1.0.1) (2026-11-24)
 
 
