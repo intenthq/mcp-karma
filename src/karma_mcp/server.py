@@ -5,6 +5,7 @@ Simple MCP server for Karma Alerts using the MCP Python SDK (MCPServer)
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 
 import httpx
@@ -320,6 +321,16 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
     Karma deduplicates labels common to every alert in a group into
     ``group.shared.labels`` (severity is the canonical example), so a match
     there counts as a match for every alert in the group.
+
+    Karma cuts each group to ``group_limit`` alerts before this filter runs,
+    so alerts that were held back are never checked against the label. The
+    result keeps ``totalAlerts`` as Karma reported it when the group's own
+    labels match, because every held-back alert then matches too. A group
+    whose own labels carry the label with another value is skipped: its
+    held-back alerts cannot match. Otherwise the held-back alerts cannot be
+    checked (Karma computes shared labels over the returned alerts only), so
+    they are counted per alertname in ``labelFilterUnchecked``. A group with
+    no fetched match is dropped from the result but still counted there.
     """
     target_name = label_name.lower()
     target_value = label_value.lower()
@@ -331,6 +342,7 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
         return ""
 
     filtered_grids = []
+    unchecked: dict[str, int] = {}
 
     for grid in alerts_data.get("grids", []):
         filtered_groups = []
@@ -340,22 +352,34 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
             shared_labels_dict = labels_list_to_dict(
                 group.get("shared", {}).get("labels", [])
             )
+            group_defines_label = any(
+                k.lower() == target_name for k in group_labels_dict
+            )
+            group_label_match = _lookup(group_labels_dict) == target_value
             group_match = (
-                _lookup(group_labels_dict) == target_value
-                or _lookup(shared_labels_dict) == target_value
+                group_label_match or _lookup(shared_labels_dict) == target_value
             )
 
+            fetched = group.get("alerts", [])
             filtered_alerts = []
-            for alert in group.get("alerts", []):
+            for alert in fetched:
                 alert_labels_dict = labels_list_to_dict(alert.get("labels", []))
                 alert_match = _lookup(alert_labels_dict) == target_value
                 if group_match or alert_match:
                     filtered_alerts.append(alert)
 
-            if filtered_alerts:
+            held_back = max(group.get("totalAlerts", len(fetched)) - len(fetched), 0)
+            if held_back and not group_defines_label:
+                name = group_labels_dict.get("alertname", "unknown")
+                unchecked[name] = unchecked.get(name, 0) + held_back
+
+            # A group that matches on its own labels is kept even when Karma
+            # returned none of its alerts, so the held-back ones stay reported
+            if filtered_alerts or (group_label_match and held_back):
                 filtered_group = group.copy()
                 filtered_group["alerts"] = filtered_alerts
-                filtered_group["totalAlerts"] = len(filtered_alerts)
+                if not group_label_match:
+                    filtered_group["totalAlerts"] = len(filtered_alerts)
                 filtered_groups.append(filtered_group)
 
         if filtered_groups:
@@ -365,7 +389,51 @@ def filter_alerts_by_label(alerts_data, label_name, label_value):
 
     filtered_data = alerts_data.copy()
     filtered_data["grids"] = filtered_grids
+    if unchecked:
+        filtered_data["labelFilterUnchecked"] = unchecked
     return filtered_data
+
+
+def label_filter_error(label_name: str, label_value: str) -> str | None:
+    """Return an error message if only one half of a label filter is given."""
+    if bool(label_name) != bool(label_value):
+        return "label_name and label_value must be given together"
+    return None
+
+
+def apply_label_filter(alerts_data, label_name: str, label_value: str):
+    """Limit alerts data to alerts carrying label_name=label_value.
+
+    A no-op when no label filter is set, so tools can call it unconditionally.
+    """
+    if not label_name:
+        return alerts_data
+    return filter_alerts_by_label(alerts_data, label_name, label_value)
+
+
+def silence_matches_label(silence: dict, label_name: str, label_value: str) -> bool:
+    """True if the silence would apply to alerts carrying label_name=label_value.
+
+    Only positive matchers count (isEqual true): a negative matcher excludes the
+    label rather than selecting it. Regex matchers are anchored, as in
+    Alertmanager.
+    """
+    target_name = label_name.lower()
+    for matcher in silence.get("matchers", []):
+        if matcher.get("name", "").lower() != target_name:
+            continue
+        if matcher.get("isEqual", True) is False:
+            continue
+        value = matcher.get("value", "")
+        if matcher.get("isRegex"):
+            try:
+                if re.fullmatch(value, label_value):
+                    return True
+            except re.error:
+                continue
+        elif value.lower() == label_value.lower():
+            return True
+    return False
 
 
 def extract_cluster_info(alerts_data):
@@ -431,17 +499,26 @@ async def check_karma() -> str:
 
 
 @mcp.tool()
-async def list_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
+async def list_alerts(
+    group_limit: int = DEFAULT_GROUP_LIMIT, label_name: str = "", label_value: str = ""
+) -> str:
     """List all active alerts in Karma.
 
     Args:
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             this when a group has more than 50 alerts and the listing
             is being truncated.
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     data, error = await fetch_karma_alerts(group_limit=group_limit)
     if error:
         return error
+    data = apply_label_filter(data, label_name, label_value)
 
     # Process alerts using utility functions
     total_alerts = 0
@@ -476,16 +553,25 @@ async def list_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
 
 @mcp.tool()
-async def get_alerts_summary(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
+async def get_alerts_summary(
+    group_limit: int = DEFAULT_GROUP_LIMIT, label_name: str = "", label_value: str = ""
+) -> str:
     """Get a summary of alerts grouped by severity and state.
 
     Args:
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group when
             fetching from Karma. Affects the counts in the summary.
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     data, error = await fetch_karma_alerts(group_limit=group_limit)
     if error:
         return error
+    data = apply_label_filter(data, label_name, label_value)
 
     # Use the centralized summary function
     summary = format_alert_summary(data, include_clusters=True)
@@ -683,19 +769,29 @@ async def list_alerts_by_label(
 
 @mcp.tool()
 async def get_alert_details(
-    alert_name: str, group_limit: int = DEFAULT_GROUP_LIMIT
+    alert_name: str,
+    group_limit: int = DEFAULT_GROUP_LIMIT,
+    label_name: str = "",
+    label_value: str = "",
 ) -> str:
     """Get detailed information about a specific alert
 
     Args:
         alert_name: Name of the alert to get details for
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when the alert has more than 50 instances and the
             listing is being truncated.
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     data, error = await fetch_karma_alerts(group_limit=group_limit)
     if error:
         return error
+    data = apply_label_filter(data, label_name, label_value)
 
     # Find matching alerts
     matching_alerts = []
@@ -749,14 +845,22 @@ async def get_alert_details(
 
 
 @mcp.tool()
-async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
+async def list_active_alerts(
+    group_limit: int = DEFAULT_GROUP_LIMIT, label_name: str = "", label_value: str = ""
+) -> str:
     """List only active (non-suppressed) alerts.
 
     Args:
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when a group has more than 50 active alerts and the
             listing is being truncated.
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     try:
         async with karma_client() as client:
             response = await client.post(
@@ -767,6 +871,7 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
             if response.status_code == 200:
                 data = response.json()
+                data = apply_label_filter(data, label_name, label_value)
 
                 active_alerts = []
                 # Alerts Karma held back per alertname because of group_limit
@@ -826,6 +931,20 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
                             f"\n   • {name}: {not_fetched[name]} not fetched"
                         )
 
+                # With a label filter, alerts held back inside groups that did not
+                # match on the group's own labels cannot be checked against it
+                unchecked = data.get("labelFilterUnchecked", {})
+                if unchecked:
+                    omitted_note += (
+                        f"\n⚠️ {sum(unchecked.values())} alerts (any state) were not fetched "
+                        f"because groups exceeded group_limit={group_limit}, and "
+                        f"their labels could not be checked against "
+                        f"{label_name}={label_value}; raise group_limit to see "
+                        "whether they match."
+                    )
+                    for name in sorted(unchecked):
+                        omitted_note += f"\n   • {name}: {unchecked[name]} not fetched"
+
                 if not active_alerts:
                     return "No active alerts found." + omitted_note
 
@@ -864,14 +983,22 @@ async def list_active_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
 
 @mcp.tool()
-async def list_suppressed_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
+async def list_suppressed_alerts(
+    group_limit: int = DEFAULT_GROUP_LIMIT, label_name: str = "", label_value: str = ""
+) -> str:
     """List only suppressed alerts.
 
     Args:
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when a group has more than 50 suppressed alerts and the
             listing is being truncated.
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     try:
         async with karma_client() as client:
             response = await client.post(
@@ -882,6 +1009,7 @@ async def list_suppressed_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
             if response.status_code == 200:
                 data = response.json()
+                data = apply_label_filter(data, label_name, label_value)
 
                 suppressed_alerts = []
                 grids = data.get("grids", [])
@@ -964,12 +1092,18 @@ async def list_suppressed_alerts(group_limit: int = DEFAULT_GROUP_LIMIT) -> str:
 
 @mcp.tool()
 async def get_alerts_by_state(
-    state: str, group_limit: int = DEFAULT_GROUP_LIMIT
+    state: str,
+    group_limit: int = DEFAULT_GROUP_LIMIT,
+    label_name: str = "",
+    label_value: str = "",
 ) -> str:
     """Get alerts filtered by state (active, suppressed, or all).
 
     Args:
         state: One of "active", "suppressed", or "all".
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when a group has more than 50 alerts and the listing is
             being truncated.
@@ -980,11 +1114,23 @@ async def get_alerts_by_state(
         return f"Invalid state '{state}'. Valid options: {', '.join(valid_states)}"
 
     if state.lower() == "active":
-        return await list_active_alerts(group_limit=group_limit)
+        return await list_active_alerts(
+            group_limit=group_limit,
+            label_name=label_name,
+            label_value=label_value,
+        )
     elif state.lower() == "suppressed":
-        return await list_suppressed_alerts(group_limit=group_limit)
+        return await list_suppressed_alerts(
+            group_limit=group_limit,
+            label_name=label_name,
+            label_value=label_value,
+        )
     else:  # all
-        return await list_alerts(group_limit=group_limit)
+        return await list_alerts(
+            group_limit=group_limit,
+            label_name=label_name,
+            label_value=label_value,
+        )
 
 
 @mcp.tool()
@@ -992,16 +1138,24 @@ async def get_alert_details_multi_cluster(
     alert_name: str,
     cluster_filter: str = "",
     group_limit: int = DEFAULT_GROUP_LIMIT,
+    label_name: str = "",
+    label_value: str = "",
 ) -> str:
     """Get detailed information about a specific alert across multiple clusters
 
     Args:
         alert_name: Name of the alert to search for (e.g., 'KubePodCrashLooping')
         cluster_filter: Optional cluster name filter. If empty, searches all clusters.
+        label_name: Optional label to filter by (e.g. 'team'). Use together
+            with label_value.
+        label_value: Value the label must have (e.g. 'platform').
         group_limit: Maximum alerts to return per alert group. Bump
             when the alert has more than 50 instances per cluster
             and the listing is being truncated.
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     try:
         async with karma_client() as client:
             response = await client.post(
@@ -1012,6 +1166,7 @@ async def get_alert_details_multi_cluster(
 
             if response.status_code == 200:
                 data = response.json()
+                data = apply_label_filter(data, label_name, label_value)
 
                 matching_alerts = []
                 cluster_stats = {}
@@ -1411,15 +1566,24 @@ async def search_alerts_by_container(
 
 
 @mcp.tool()
-async def list_silences(cluster: str = "") -> str:
+async def list_silences(
+    cluster: str = "", label_name: str = "", label_value: str = ""
+) -> str:
     """List all active silences across clusters or for a specific cluster
 
     Args:
         cluster: Optional cluster name to filter silences (e.g., 'teddy-prod')
+        label_name: Optional label; only silences whose matchers select
+            label_name=label_value are listed (e.g. 'team' and 'platform').
+            Use together with label_value.
+        label_value: Value the label must have (e.g. 'platform').
 
     Returns:
         Formatted list of active silences with details
     """
+    if error := label_filter_error(label_name, label_value):
+        return error
+
     try:
         async with karma_client() as client:
             response = await client.post(
@@ -1447,6 +1611,20 @@ async def list_silences(cluster: str = "") -> str:
 
                     if not silences:
                         return f"No active silences found for cluster: {cluster}"
+
+                if label_name:
+                    silences = {
+                        cluster_name: {
+                            sid: silence
+                            for sid, silence in cluster_silences.items()
+                            if silence_matches_label(silence, label_name, label_value)
+                        }
+                        for cluster_name, cluster_silences in silences.items()
+                    }
+                    if not any(silences.values()):
+                        return (
+                            f"No active silences found for {label_name}={label_value}"
+                        )
 
                 # Format output
                 result = f"Active Silences{f' in {cluster}' if cluster else ''}\n"
@@ -1480,6 +1658,8 @@ async def list_silences(cluster: str = "") -> str:
                                     if len(value) > 50:
                                         value = value[:47] + "..."
                                     result += f"       - {name}: {value}\n"
+                                if len(matchers) > 3:
+                                    result += f"       ... and {len(matchers) - 3} more matchers\n"
                             result += "\n"
 
                         if len(cluster_silences) > 5:

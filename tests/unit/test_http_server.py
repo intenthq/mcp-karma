@@ -2,6 +2,7 @@
 Unit tests for HTTP server functionality
 """
 
+import inspect
 from unittest.mock import patch
 
 import pytest
@@ -610,3 +611,222 @@ class TestErrorHandling:
         assert data["jsonrpc"] == "2.0"
         assert "error" in data
         assert data["error"]["code"] == -32603  # Internal error
+
+
+# --- label filter over HTTP -------------------------------------------------
+
+LABEL_TOOLS = [
+    "list_alerts",
+    "get_alerts_summary",
+    "get_alert_details",
+    "get_alert_details_multi_cluster",
+    "list_active_alerts",
+    "list_suppressed_alerts",
+    "get_alerts_by_state",
+    "list_silences",
+]
+
+# arguments each tool needs besides the filter, and how the HTTP layer calls it
+# (positional arguments before the keyword arguments)
+TOOL_ARGS = {
+    "list_alerts": ({}, ()),
+    "get_alerts_summary": ({}, ()),
+    "get_alert_details": ({"alert_name": "DiskFull"}, ("DiskFull",)),
+    "get_alert_details_multi_cluster": (
+        {"alert_name": "DiskFull"},
+        ("DiskFull", ""),
+    ),
+    "list_active_alerts": ({}, ()),
+    "list_suppressed_alerts": ({}, ()),
+    "get_alerts_by_state": ({"state": "active"}, ("active",)),
+    "list_silences": ({}, ("",)),
+}
+
+FILTER = {"label_name": "team", "label_value": "platform"}
+
+
+def _tools_list(client: TestClient) -> dict:
+    response = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    )
+    return {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+
+
+def _call(client: TestClient, route: str, tool: str, arguments: dict):
+    """Call a tool through one of the three HTTP entry points."""
+    if route == "jsonrpc":
+        return client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments},
+            },
+        )
+    if route == "tools":
+        return client.post(f"/mcp/tools/{tool}", json=arguments)
+    return client.post("/mcp/execute", json={"tool": tool, "params": arguments})
+
+
+def _error_text(route: str, response) -> str | None:
+    """The error a route reports, or None when the call succeeded."""
+    body = response.json()
+    if route == "jsonrpc":
+        return body["error"]["message"] if "error" in body else None
+    if route == "tools":
+        return body["detail"] if response.status_code != 200 else None
+    return body["error"] if not body.get("success") else None
+
+
+class TestLabelFilterOverHttp:
+    """label_name/label_value must be advertised and forwarded by every route."""
+
+    def test_tools_list_advertises_the_filter(self):
+        tools = _tools_list(TestClient(app))
+
+        for name in LABEL_TOOLS:
+            schema = tools[name]["inputSchema"]
+            assert {"label_name", "label_value"} <= set(schema["properties"]), name
+            assert not {"label_name", "label_value"} & set(schema.get("required", []))
+        # tools that do not take the filter stay as they were
+        assert "label_name" not in tools["list_clusters"]["inputSchema"]["properties"]
+
+    def test_tools_list_matches_function_signatures(self):
+        """The hand-written schemas must not drift from the real functions."""
+        from karma_mcp import server
+
+        for name, tool in _tools_list(TestClient(app)).items():
+            expected = set(inspect.signature(getattr(server, name)).parameters)
+            assert set(tool["inputSchema"]["properties"]) == expected, name
+
+    @pytest.mark.parametrize("route", ["jsonrpc", "tools", "execute"])
+    @pytest.mark.parametrize("tool", LABEL_TOOLS)
+    def test_filter_is_passed_through(self, tool, route):
+        arguments, positional = TOOL_ARGS[tool]
+        client = TestClient(app)
+
+        with patch(f"karma_mcp.http_server.{tool}") as mock_tool:
+            mock_tool.return_value = "ok"
+            response = _call(client, route, tool, {**arguments, **FILTER})
+
+        assert _error_text(route, response) is None
+        mock_tool.assert_called_once_with(*positional, **FILTER)
+
+    @pytest.mark.parametrize("route", ["jsonrpc", "tools", "execute"])
+    @pytest.mark.parametrize("tool", LABEL_TOOLS)
+    def test_without_filter_nothing_extra_is_passed(self, tool, route):
+        arguments, positional = TOOL_ARGS[tool]
+        client = TestClient(app)
+
+        with patch(f"karma_mcp.http_server.{tool}") as mock_tool:
+            mock_tool.return_value = "ok"
+            response = _call(client, route, tool, dict(arguments))
+
+        assert _error_text(route, response) is None
+        mock_tool.assert_called_once_with(*positional)
+
+    @pytest.mark.parametrize("route", ["jsonrpc", "tools", "execute"])
+    @pytest.mark.parametrize("half", [{"label_name": "team"}, {"label_value": "x"}])
+    @pytest.mark.parametrize("tool", LABEL_TOOLS)
+    def test_half_a_filter_is_rejected(self, tool, half, route):
+        arguments, _ = TOOL_ARGS[tool]
+        client = TestClient(app)
+
+        with patch(f"karma_mcp.http_server.{tool}") as mock_tool:
+            response = _call(client, route, tool, {**arguments, **half})
+
+        error = _error_text(route, response)
+        assert error is not None
+        assert "label_name and label_value must be given together" in error
+        mock_tool.assert_not_called()
+
+    def test_rest_silences_passes_the_filter(self):
+        client = TestClient(app)
+
+        with patch("karma_mcp.http_server.list_silences") as mock_silences:
+            mock_silences.return_value = "silences"
+            response = client.get("/silences", params={"cluster": "c1", **FILTER})
+            assert response.json()["success"] is True
+            mock_silences.assert_called_once_with("c1", **FILTER)
+
+        with patch("karma_mcp.http_server.list_silences") as mock_silences:
+            mock_silences.return_value = "silences"
+            client.get("/silences")
+            mock_silences.assert_called_once_with("")
+
+    def test_rest_silences_rejects_half_a_filter(self):
+        client = TestClient(app)
+
+        with patch("karma_mcp.http_server.list_silences") as mock_silences:
+            response = client.get("/silences", params={"label_name": "team"})
+
+        assert response.json()["success"] is False
+        mock_silences.assert_not_called()
+
+    def test_jsonrpc_end_to_end_keeps_the_truncation_warning(self):
+        """Whole stack, only Karma itself is mocked: filter + group_limit."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        alert = {
+            "annotations": [],
+            "labels": [{"name": "instance", "value": "10.0.0.1"}],
+            "startsAt": "2025-09-04T09:30:00Z",
+            "state": "active",
+            "alertmanager": [{"cluster": "c1", "name": "am", "state": "active"}],
+            "receiver": "web.hook",
+            "id": "a1",
+        }
+        data = {
+            "grids": [
+                {
+                    "alertGroups": [
+                        {
+                            "receiver": "web.hook",
+                            "labels": [
+                                {"name": "alertname", "value": "DiskFull"},
+                                {"name": "team", "value": "platform"},
+                            ],
+                            "alerts": [alert],
+                            "id": "g1",
+                            "totalAlerts": 4,
+                        },
+                        {
+                            "receiver": "web.hook",
+                            "labels": [
+                                {"name": "alertname", "value": "QueueLag"},
+                                {"name": "team", "value": "other"},
+                            ],
+                            "alerts": [alert],
+                            "id": "g2",
+                            "totalAlerts": 2,
+                        },
+                    ]
+                }
+            ]
+        }
+        mock_client = AsyncMock()
+        response_mock = MagicMock()
+        response_mock.status_code = 200
+        response_mock.json.return_value = data
+        mock_client.post.return_value = response_mock
+
+        with patch("karma_mcp.server.karma_client") as mock_client_class:
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            response = TestClient(app).post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_active_alerts",
+                        "arguments": {**FILTER, "group_limit": 1},
+                    },
+                },
+            )
+
+        text = response.json()["result"]["content"][0]["text"]
+        assert "DiskFull" in text
+        assert "QueueLag" not in text
+        assert "3 more not fetched (group_limit=1)" in text
